@@ -3,12 +3,12 @@ package com.wavesenterprise.app.domain;
 import static com.wavesenterprise.app.api.IContract.Role.USER;
 
 public class User {
-    private String name;
-    private String homeAddress;
-    private String blockchainAddress;
-    private double balance;
-    private String role;
-    private String postId;
+    private String name; // имя
+    private String homeAddress; // домашний адрес
+    private String blockchainAddress; //блокчейн адрес
+    private double balance; // баланс
+    private String role; // роль
+    private String postId; // айди почтового отделения (в начале RR)
 
     public User(String name, String homeAddress, String blockchainAddress, double balance) {
         this.name = name;
