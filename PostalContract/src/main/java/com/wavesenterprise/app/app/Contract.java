@@ -1,6 +1,6 @@
 package com.wavesenterprise.app.app;
-import com.wavesenterprise.app.api.IContract;
 
+import com.wavesenterprise.app.api.IContract;
 import com.wavesenterprise.app.domain.TransferItem;
 import com.wavesenterprise.sdk.contract.api.annotation.*;
 import com.wavesenterprise.sdk.contract.api.domain.ContractCall;
@@ -13,355 +13,382 @@ import com.wavesenterprise.sdk.contract.api.state.mapping.Mapping;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.Objects;
-import java.util.UUID;
+import java.util.*;
 
 import static com.wavesenterprise.app.api.IContract.Keys.*;
 import static com.wavesenterprise.app.api.IContract.Role.*;
-import static com.wavesenterprise.app.api.IContract.StutusPostal.*;
+import static com.wavesenterprise.app.api.IContract.Status.*;
 
 
 @ContractHandler
 public class Contract implements IContract {
 
-    ContractCall call;
-    ContractState state;
+    private ContractCall call;
+    private ContractState state;
 
-    public Mapping<User> users;
-    public Mapping<PostItem> postals;
-    public Mapping<TransferItem> transfer;
+    private Mapping<User> users; // пользователи в системе
+    private Mapping<PostItem> postals; // почтовые отправления
+    private Mapping<TransferItem> transfers; // переводы
+    private Mapping<List<String>> userItems; // отправления пользователя
 
+    // ==================== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ====================
 
-    public Contract() {
-
-        this.users = state.getMapping(new TypeReference<User>(){}, USER_MAPPING);
-        this.postals = state.getMapping(new TypeReference<PostItem>() {}, POST_ITEM_MAPPING);
-        this.transfer = state.getMapping(new TypeReference<TransferItem>() {}, TRANSFERS_MAPPING);
+    /// Создание нового пользователя
+    private void createUser(String name, String homeAddress, String blockchainAddress, int balance, String role, String postId) {
+        User newUser = new User(name, homeAddress, blockchainAddress, balance, role, postId);
+        users.put(blockchainAddress, newUser);
     }
 
-    //вспомогательные методы -------------------------------------------------------------------------------------------
+    private int dailyCounter = 0; // счётчик отправлений за день
+    private long lastResetTime = System.currentTimeMillis(); // время последнего перезапуска
 
-    /// Создание пользователя
-    public void createUser(String name, String homeAddress, String blockchainAddress, int balance, String role, String poetId) {
-        User newUsers = new User();
-        newUsers.setName(name);
-        newUsers.setHomeAddress(homeAddress);
-        newUsers.setBlockchainAddress(blockchainAddress);
-        newUsers.setBalance(balance);
-        newUsers.setRole(role);
-        newUsers.setPostId(poetId);
-        users.put(call.getCaller(), newUsers);
+    /// Простой счетчик, который сбрасывается каждые 5 секунд
+    private int getDailyCounter() {
+        long currentTime = System.currentTimeMillis();
+        // Сбрасываем счетчик каждые 5 секунд (1 день в задании)
+        if (currentTime - lastResetTime >= 5000) {
+            dailyCounter = 0;
+            lastResetTime = currentTime;
+        }
+        dailyCounter++;
+        return dailyCounter;
     }
 
-    /// Создание почтового отправления
-    public PostItem createPostalItems(String trackNumber , String sender, String recipient, String type, byte classDeparture, int weight, String addressTo, String addressFrom, String status) {
-        PostItem newPostalItem = new PostItem();
-        newPostalItem.setTrackNumber(trackNumber);
-        newPostalItem.setSender(sender);
-        newPostalItem.setRecipient(recipient);
-        newPostalItem.setType(type);
-        newPostalItem.setClassDeparture(classDeparture);
-        newPostalItem.setWeight(weight);
-        newPostalItem.setAddressTo(addressTo);
-        newPostalItem.setAddressFrom(addressFrom);
-        newPostalItem.setStatus(status);
-        return newPostalItem;
-    }
-
-    /// Создание денежного перевода
-    public TransferItem createTransfer(String transferId , String sender, String recipient, int amount, int timeLive,String status) {
-        TransferItem newTransferItem = new TransferItem();
-        newTransferItem.setTransferId(transferId);
-        newTransferItem.setSender(sender);
-        newTransferItem.setRecipient(recipient);
-        newTransferItem.setAmount(amount);
-        newTransferItem.setTimeLive(timeLive);
-        newTransferItem.setStatus(status);
-
-        transfer.put(call.getCaller(), newTransferItem);
-
-        return newTransferItem;
-    }
-
-    /// Генерация трек номера
-    public static String generationTrackNumber(String addressTo, String addressFrom) {
+     /// Генерация трек-номера по формату: RR + ДДММГГГГ + порядковый номер + индекс отпр. + индекс получ.
+    private String generationTrackNumber(String addressFrom, String addressTo) {
         LocalDateTime now = LocalDateTime.now();
-        DateTimeFormatter fmt = DateTimeFormatter.ofPattern("ddMMyyyy");
-        String s = now.format(fmt);
-        String trackNumber = "RR" + s + addressTo + addressFrom;
-        System.out.println(trackNumber);
-        return trackNumber;
+        DateTimeFormatter dateStr = DateTimeFormatter.ofPattern("ddMMyyyy");
+
+        int dailyCounter = getDailyCounter();
+
+        // Формат: RR + дата + счетчик(4 цифры) + индекс отпр. + индекс получ.
+        String counterStr = String.format("%04d", dailyCounter);
+        return "RR" + dateStr + counterStr + addressFrom + addressTo;
     }
 
-    // проверки --------------------------------------------------------------------------------------------------------
 
-    /// Проверка на админа
+     /// Проверка прав администратора
     private void checkAdminRights() {
         User user = getUserOrThrow(call.getCaller());
-        if (ADMIN.equals(user.getRole())) {
+        if (!ADMIN.equals(user.getRole())) {
             throw new IllegalStateException("Только администратор может выполнять это действие");
         }
     }
 
-    /// Проверка на существование пользователя и его получение
-    private User getUserOrThrow(String address) {
+    @ContractAction
+    @Override
+    /// Получение пользователя по адресу или исключение если не найден
+    public User getUserOrThrow(String address) {
         return users.tryGet(address)
                 .orElseThrow(() -> new IllegalStateException("Пользователь не найден: " + address));
     }
 
-    /// Проверка на существование отправление и его получение
-    private PostItem getPostItemOrThrow(String trackNumber) {
+    @ContractAction
+    @Override
+     /// Получение почтового отправления по трек-номеру или исключение если не найдено
+    public PostItem getPostalOrThrow(String trackNumber) {
         return postals.tryGet(trackNumber)
                 .orElseThrow(() -> new IllegalStateException("Отправление не найдено: " + trackNumber));
     }
 
-    /// Проверка на существования пользователя и его получение
-    private TransferItem getTransferOrThrow(String transferId) {
-        return transfer.tryGet(transferId)
+    @ContractAction
+    @Override
+     /// Получение денежного перевода по идентификатору
+    public TransferItem getTransferOrThrow(String transferId) {
+        return transfers.tryGet(transferId)
                 .orElseThrow(() -> new IllegalStateException("Перевод не найден: " + transferId));
     }
 
-    // инициализация контракта -----------------------------------------------------------------------------------------
+    // ==================== ИНИЦИАЛИЗАЦИЯ КОНТРАКТА ====================
 
     @ContractInit
     @Override
-    public void init(){
-        // создаём админа
-        createUser("Семенов Семен Семенович", "ПО г. Ростова-на-Дону", "3NgEjoVu9e2PavxDkRU6ZsX55MyNFy7LeUR", 50, ADMIN, "344000");
+    public void init() {
+        // Инициализация маппингов для хранения данных
+        this.users = state.getMapping(new TypeReference<User>(){}, USER_MAPPING);
+        this.postals = state.getMapping(new TypeReference<PostItem>(){}, POST_ITEM_MAPPING);
+        this.transfers = state.getMapping(new TypeReference<TransferItem>(){}, TRANSFERS_MAPPING);
+        this.userItems = state.getMapping(new TypeReference<List<String>>(){}, USER_SENT_ITEMS);
 
-        // создаём других пользователей
-        createUser("Петров Петр Петрович", "ПО г. Ростова-на-Дону", "3NosmW2oc9QYCi1xEPUQyyJk2WKDwQpyQnv", 50, EMPLOYEE, "344000");
-        createUser("Антонов Антон Антонов", "ПО г. Таганрога", "3NwdYkLxcyCH1aP15y5cZdwKu3o6rSNWVyP", 50, EMPLOYEE, "347900");
 
-        createUser("Юрьев Юрий Юрьевич", "", "3Ngqy6n5GQbUxNnqqdwWSrinhtknmLFGHLM", 50, USER, null);
-    };
+        // Создание администратора
+        createUser("Семенов Семен Семенович", "ПО г. Ростова-на-Дону",
+                "3NgEjoVu9e2PavxDkRU6ZsX55MyNFy7LeUR", 50, ADMIN, "RR344000");
 
-    /// регистрация
+        // Создание сотрудников почтовых отделений
+        createUser("Петров Петр Петрович", "ПО г. Ростова-на-Дону",
+                "3NosmW2oc9QYCi1xEPUQyyJk2WKDwQpyQnv", 50, EMPLOYEE, "RR344000");
+        createUser("Антонов Антон Антонович", "ПО г. Таганрога",
+                "3NwdYkLxcyCH1aP15y5cZdwKu3o6rSNWVyP", 50, EMPLOYEE, "RR347900");
+
+        // Создание обычного пользователя
+        createUser("Юрьев Юрий Юрьевич", "ул. Примерная, д.1",
+                "3Ngqy6n5GQbUxNnqqdwWSrinhtknmLFGHLM", 50, USER, null);
+    }
+
+    // ==================== УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ ====================
+
     @ContractAction
     @Override
-    public void registration(String name, String homeAddress) throws IllegalAccessException {
-        if(users.tryGet(call.getCaller()).isPresent()) {
-             throw new IllegalAccessException("пользователь уже зарегестрирован");
+    /// Регистрация
+    public void registration(String name, String homeAddress) {
+        String caller = call.getCaller();
+        if (users.tryGet(caller).isPresent()) {
+            throw new IllegalStateException("Пользователь уже зарегистрирован");
         }
-        createUser(name, homeAddress, call.getCaller(), 0, USER, null);
-    };
+        createUser(name, homeAddress, caller, 0, USER, null);
+    }
 
+    @ContractAction
+    @Override
     /// Изменение персональных данных
-    @ContractAction
-    @Override
-    public void setPersonInfo(String name, String homeAddress){
+    public void setPersonInfo(String name, String homeAddress) {
         String caller = call.getCaller();
-        User sender = getUserOrThrow(caller);
-        sender.setName(name);
-        sender.setHomeAddress(homeAddress);
-        users.put(call.getCaller(), sender);
-    };
+        User user = getUserOrThrow(caller);
+        user.setName(name);
+        user.setHomeAddress(homeAddress);
+        users.put(caller, user);
+    }
 
-    // функции администратора ------------------------------------------------------------------------------------------
+    // ==================== ФУНКЦИИ АДМИНИСТРАТОРА ====================
 
-    /// Добавление или удаление сотрудника почтового отделения
     @ContractAction
     @Override
-    public void setUserRole(String userAddress,String postId, boolean isEmployee){
+    /// Добавление или удаление сотрудника
+    public void setUserRole(String userAddress, String postId, boolean isEmployee) {
         checkAdminRights();
-        User sender = getUserOrThrow(userAddress);
-        if(isEmployee) {
-            sender.setRole(EMPLOYEE);
-            sender.setPostId("RR" + postId);
+        User user = getUserOrThrow(userAddress);
+
+        if (isEmployee) {
+            user.setRole(EMPLOYEE);
+            user.setPostId("RR" + postId);
         } else {
-            sender.setRole(USER);
-            sender.setPostId(null);
+            user.setRole(USER);
+            user.setPostId(null);
         }
-
-        users.put(userAddress, sender);
-    };
-
-    /// Изменить айди почтового отделения у пользователя
-    @ContractAction
-    @Override
-    public void setUserPostId(String userAddress, String postId){
-        checkAdminRights();
-        User sender = getUserOrThrow(userAddress);
-        sender.setPostId(postId);
-        users.put(userAddress, sender);
+        users.put(userAddress, user);
     }
 
-    // почтовое отправление --------------------------------------------------------------------------------------------
-
-    /// Отправить почтовое отправление
-    @Override
     @ContractAction
-    public void sendPostItem( String recipient, String type, byte classDeparture, int weight, String addressTo, String addressFrom) throws IllegalAccessException {
+    @Override
+    /// Изменения айди почтового отделения для сотрудника
+    public void setUserPostId(String userAddress, String postId) {
+        checkAdminRights();
+        User user = getUserOrThrow(userAddress);
+        if (!EMPLOYEE.equals(user.getRole())) {
+            throw new IllegalStateException("Можно изменять postId только сотрудникам");
+        }
+        user.setPostId("RR" + postId);
+        users.put(userAddress, user);
+    }
+
+    // ==================== ПОЧТОВЫЕ ОТПРАВЛЕНИЯ ====================
+
+    @ContractAction
+    @Override
+     /// Отправить почтовое отправление
+    public void sendPostItem(String recipient, String type, byte classDeparture, int weight,
+                             int importantValue, String addressTo, String addressFrom) {
         String caller = call.getCaller();
         User sender = getUserOrThrow(caller);
 
-        String trackNumber = generationTrackNumber(addressTo, addressFrom);
-
+        String trackNumber = generationTrackNumber(addressFrom, addressTo);
         // Создаем отправление
-        PostItem newPosatItem = createPostalItems(trackNumber, caller, recipient, type, classDeparture, weight, addressTo, addressFrom, ACTIVE);
+        PostItem postItem = new PostItem(trackNumber, caller, recipient, type, classDeparture,
+                weight, importantValue, addressTo, addressFrom, ACTIVE);
 
-        // проверка на средства
-        if(sender.getBalance() < newPosatItem.getFinalCost()) {
-            throw new IllegalAccessException("недостаточно средств");
+        // Проверяем на наличие средств
+        if (sender.balance < postItem.finalCost) {
+            throw new IllegalStateException("Недостаточно средств");
         }
 
-        sender.setBalance((int) (sender.getBalance() - newPosatItem.getFinalCost()));
+        // Просто списываем средства
+        sender.balance -= (int) postItem.finalCost;
 
-        // Списание средств
+        Optional<List<String>> currentItemsOpt = userItems.tryGet(caller);
+        List<String> currentItems = currentItemsOpt.orElse(new ArrayList<>());
+
+        currentItems.add(trackNumber);
+        userItems.put(caller, currentItems);
+
+        // Сохраняем
         users.put(caller, sender);
-        postals.put(trackNumber, newPosatItem);
-    }
-
-    /// Записать данные об отправлении
-    @ContractAction
-    @Override
-    public void recordPostItem(String sender, String recipient, String type, byte classDeparture, int weight, String addressTo, String addressFrom) {
-        String caller = call.getCaller();
-        User employee = getUserOrThrow(caller);
-
-        if (EMPLOYEE.equals(employee.getRole())) {
-            throw new IllegalStateException("Только сотрудник может записывать отправления");
-        }
-
-        if (employee.getPostId() == addressFrom) {
-            throw new IllegalStateException("отправление не относится к вашему отделению");
-        }
-
-        String trackNumber = generationTrackNumber(addressTo, addressFrom);
-
-        PostItem postItem = createPostalItems(trackNumber, sender, recipient, type, classDeparture, weight, addressTo, addressFrom, ACTIVE);
-
         postals.put(trackNumber, postItem);
     }
 
-    /// Получить почтовое отправление
     @ContractAction
     @Override
+    ///  Записать данные о почтовом отправлении
+    public void addTransitPoint(String trackNumber, String postOfficeId, int weight) {
+
+        String caller = call.getCaller();
+        User employee = getUserOrThrow(caller);
+        PostItem postItem = getPostalOrThrow(trackNumber);
+
+        if (!EMPLOYEE.equals(employee.getRole())) {
+            throw new IllegalStateException("Только сотрудник может выполнять это действие");
+        }
+
+        // Проверка работы сотрудника в указанном отделении
+        if (!postOfficeId.equals(employee.getPostId())) {
+            throw new IllegalStateException("Вы не работаете в этом почтовом отделении");
+        }
+
+        postItem.addTransitPoint(postOfficeId, caller, weight);
+        postals.put(trackNumber, postItem);
+    }
+
+    @ContractAction
+    @Override
+    /// Получить почтовое отправлении
     public PostItem getPostItem(String trackNumber) {
         String caller = call.getCaller();
-        PostItem postItem = getPostItemOrThrow(trackNumber);
+        PostItem postItem = getPostalOrThrow(trackNumber);
 
-        if (caller.equals(postItem.getRecipient())) {
+        if (!caller.equals(postItem.getRecipient())) {
             throw new IllegalStateException("Вы не являетесь получателем этого отправления");
         }
+
+        if (!ACTIVE.equals(postItem.getStatus())) {
+            throw new IllegalStateException("Отправление недоступно для получения");
+        }
+
         postItem.setStatus(ACCEPTED);
         postals.put(trackNumber, postItem);
 
         return postItem;
     }
 
-    /// Отказаться от отправления
     @ContractAction
     @Override
+    /// Отказаться от почтового отправления
     public void refusePostItem(String trackNumber) {
         String caller = call.getCaller();
-        PostItem postItem = getPostItemOrThrow(trackNumber);
+        PostItem postItem = getPostalOrThrow(trackNumber);
 
-        if (caller.equals(postItem.getRecipient())) {
+        if (!caller.equals(postItem.getRecipient())) {
             throw new IllegalStateException("Вы не являетесь получателем этого отправления");
+        }
+
+        if (!ACTIVE.equals(postItem.getStatus())) {
+            throw new IllegalStateException("Нельзя отказаться от этого отправления");
         }
 
         postItem.setStatus(REFUSE);
         postals.put(trackNumber, postItem);
     }
 
+    // ==================== ДЕНЕЖНЫЕ ПЕРЕВОДЫ ====================
 
-    // Денежные переводы -----------------------------------------------------------------------------------------------
-
-    ///  Отправить денежный перевод
     @ContractAction
     @Override
+    ///  Отправить денежный перевод
     public void sendTransfer(String recipient, int amount, int timeLive) {
-        String transferId = UUID.randomUUID().toString();
-        String caller = call.getCaller();
-        User sender =  getUserOrThrow(caller);
-
-        if(sender.getBalance() > amount) {
-            throw new IllegalStateException("Вы недостаточно средств");
+        if (amount <= 0) {
+            throw new IllegalStateException("Сумма перевода должна быть положительной");
         }
+
+        String caller = call.getCaller();
+        User sender = getUserOrThrow(caller);
+        getUserOrThrow(recipient); // Проверка существования получателя
+
+        if (sender.getBalance() < amount) {
+            throw new IllegalStateException("Недостаточно средств на счете");
+        }
+
+        String transferId = UUID.randomUUID().toString();
 
         sender.setBalance(sender.getBalance() - amount);
-
-        TransferItem transferItem = createTransfer(transferId, call.getCaller(),recipient,  amount, timeLive, ACTIVE);
-        transfer.put(transferId, transferItem);
         users.put(caller, sender);
+
+        TransferItem transferItem = new TransferItem(transferId, caller, recipient, amount, timeLive, ACTIVE);
+        transfers.put(transferId, transferItem);
     }
 
-    /// Получить денежный перевод
     @ContractAction
     @Override
+    ///  Принять денежный перевод
     public void getTransfer(String transferId) {
         String caller = call.getCaller();
-        User sender = getUserOrThrow(caller);
-
+        User recipientUser = getUserOrThrow(caller);
         TransferItem transferItem = getTransferOrThrow(transferId);
 
-        if(caller.equals(transferItem.getRecipient())) {
+        if (!caller.equals(transferItem.getRecipient())) {
             throw new IllegalStateException("Вы не являетесь получателем этого перевода");
         }
 
-        if(Objects.equals(transferItem.getStatus(), ACTIVE)) {
-            throw new IllegalStateException("перевод не активен");
+        if (!ACTIVE.equals(transferItem.getStatus())) {
+            throw new IllegalStateException("Перевод недоступен для получения");
         }
-        int amount = transferItem.getAmount();
-        sender.setBalance(sender.getBalance() + amount);
 
+        if (transferItem.isExpired()) {
+            throw new IllegalStateException("Время жизни перевода истекло");
+        }
+
+        recipientUser.setBalance(recipientUser.getBalance() + transferItem.getAmount());
         transferItem.setStatus(ACCEPTED);
 
-        transfer.put(transferItem.getTransferId(), transferItem);
-        users.put(caller, sender);
+        users.put(caller, recipientUser);
+        transfers.put(transferId, transferItem);
     }
 
-    /// Отказаться от денежного перевода
     @ContractAction
     @Override
+    /// Отказаться от денежного перевода
     public void refuseTransfer(String transferId) {
         String caller = call.getCaller();
-        User sender = getUserOrThrow(caller);
-
         TransferItem transferItem = getTransferOrThrow(transferId);
 
-        if(caller.equals(transferItem.getRecipient())) {
+        if (!caller.equals(transferItem.getRecipient())) {
             throw new IllegalStateException("Вы не являетесь получателем этого перевода");
         }
 
+        if (!ACTIVE.equals(transferItem.getStatus())) {
+            throw new IllegalStateException("Нельзя отказаться от этого перевода");
+        }
+
+        // Возврат средств отправителю
+        User sender = getUserOrThrow(transferItem.getSender());
+        sender.setBalance(sender.getBalance() + transferItem.getAmount());
         transferItem.setStatus(REFUSE);
 
-        transfer.put(transferItem.getTransferId(), transferItem);
-        users.put(caller, sender);
+        users.put(transferItem.getSender(), sender);
+        transfers.put(transferId, transferItem);
     }
 
-
-    // получение информации --------------------------------------------------------------------------------------------
-
-
-    /// Получить активные отправления-----------------------------------------------------------------------------------
-
-    /// Получить историю отправлений------------------------------------------------------------------------------------
-
-    /// Получить информацию о денежном перевод
     @ContractAction
     @Override
-    public TransferItem getTransferInfo(String transferId) {
-        return transfer.tryGet(transferId)
-                .orElseThrow(() -> new IllegalStateException("перевод не найден : " + transferId));
+    public List<PostItem> getUserSentItems(String userAddress) {
+        // Используем tryGet вместо getOrDefault
+        Optional<List<String>> trackNumbersOpt = userItems.tryGet(userAddress);
+        List<String> trackNumbers = trackNumbersOpt.orElse(new ArrayList<>());
+
+        List<PostItem> result = new ArrayList<>();
+
+        for (String trackNumber : trackNumbers) {
+            Optional<PostItem> itemOpt = postals.tryGet(trackNumber);
+            itemOpt.ifPresent(result::add);
+        }
+
+        return result;
     }
 
-
-    /// Отслеживаем отправление по трек номеру
-    @Override
     @ContractAction
-    public PostItem trackDeparture(String trackNumber) {
-        return postals.tryGet(trackNumber)
-                .orElseThrow(() -> new IllegalStateException("отправление не найдено : " + trackNumber));
+    @Override
+    public List<PostItem> getActivePostItems(String userAddress) {
+        Optional<List<String>> trackNumbersOpt = userItems.tryGet(userAddress);
+        List<String> trackNumbers = trackNumbersOpt.orElse(new ArrayList<>());
+
+        List<PostItem> result = new ArrayList<>();
+
+        for (String trackNumber : trackNumbers) {
+            Optional<PostItem> itemOpt = postals.tryGet(trackNumber);
+            if (itemOpt.isPresent() && ACTIVE.equals(itemOpt.get().status)) {
+                result.add(itemOpt.get());
+            }
+        }
+
+        return result;
     }
 
-
-    /// Получить информацию о пользователе
-    @ContractAction
-    @Override
-    public User getPersonInfo(String userAddress){
-        return users.tryGet(userAddress)
-                .orElseThrow(() -> new IllegalStateException("Пользователь не найден: " + userAddress));
-    };
 }

@@ -1,30 +1,59 @@
 package com.wavesenterprise.app.domain;
 
 public class TransferItem {
-
+    /** Уникальный идентификатор перевода */
     public String transferId;
-    public String sender; // отправитель
-    public String recipient; // получатель
-    public int amount; // сумма
-    public int timeLive; // время жизни перевода
-    public String status; // активно принято отменено
 
+    /** Адрес отправителя перевода в блокчейн-системе */
+    public String sender;
 
-    public TransferItem( String transferId, String sender, String recipient, int amount, int timeLive, String status) {
+    /** Адрес получателя перевода в блокчейн-системе */
+    public String recipient;
+
+    /** Сумма перевода в токенах WEST */
+    public int amount;
+
+    /** Время жизни перевода в днях */
+    public int timeLive;
+
+    /** Статус перевода (ACTIVE, REFUSE, ACCEPTED, CANCELLED) */
+    public String status;
+
+    /** Временная метка создания перевода (в миллисекундах) */
+    public long createdAt;
+
+    /**
+     * Конструктор денежного перевода
+     * @param transferId Уникальный идентификатор перевода
+     * @param sender Адрес отправителя
+     * @param recipient Адрес получателя
+     * @param amount Сумма перевода в WEST
+     * @param timeLive Время жизни перевода в днях
+     * @param status Статус перевода
+     */
+    public TransferItem(String transferId, String sender, String recipient, int amount, int timeLive, String status) {
         this.transferId = transferId;
         this.sender = sender;
         this.recipient = recipient;
         this.amount = amount;
         this.timeLive = timeLive;
         this.status = status;
+        this.createdAt = System.currentTimeMillis();
     }
 
-    public String getStatus() {
-        return status;
-    }
+    /** Конструктор по умолчанию для десериализации */
+    public TransferItem() {}
 
-    public void setStatus(String status) {
-        this.status = status;
+    /**
+     * Проверить, истекло ли время жизни перевода
+     * @return true если время жизни истекло, false если еще действует
+     */
+    public boolean isExpired() {
+        long currentTime = System.currentTimeMillis();
+        long createdTime = this.createdAt;
+        // 1 день в задании = 5 секунд реального времени
+        long daysPassed = (currentTime - createdTime) / (1000 * 5);
+        return daysPassed >= timeLive;
     }
 
     public String getTransferId() {
@@ -34,8 +63,6 @@ public class TransferItem {
     public void setTransferId(String transferId) {
         this.transferId = transferId;
     }
-
-    public TransferItem() {}
 
     public String getSender() {
         return sender;
@@ -67,5 +94,21 @@ public class TransferItem {
 
     public void setTimeLive(int timeLive) {
         this.timeLive = timeLive;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public void setStatus(String status) {
+        this.status = status;
+    }
+
+    public long getCreatedAt() {
+        return createdAt;
+    }
+
+    public void setCreatedAt(long createdAt) {
+        this.createdAt = createdAt;
     }
 }
